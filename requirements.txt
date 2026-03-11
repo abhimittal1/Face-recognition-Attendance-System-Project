@@ -1,0 +1,6 @@
+facenet-pytorch
+torch
+torchvision
+opencv-python
+numpy
+scipy
