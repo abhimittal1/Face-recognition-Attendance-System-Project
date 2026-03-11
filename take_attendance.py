@@ -52,6 +52,65 @@ def find_best_match(embedding, students):
     return None, best_dist
 
 
+def perform_liveness_check(cap, face_bbox, max_checks=12, motion_threshold=0.015,
+                           area_var_threshold=0.008, wait_ms=80):
+    """
+    Checks small real movements (blinks/head shifts) over a short video window —
+    photos/screens remain nearly static and therefore fail.
+
+    Returns True if the face is live, False if it is likely a static photo/screen.
+    """
+    x, y, w, h = (int(c) for c in face_bbox)
+    diffs       = []  # normalized frame-to-frame pixel motion values
+    area_ratios = []  # normalized face-bbox area per frame (detects size jitter)
+    prev_gray = None
+
+    for _ in range(max_checks):
+        ret, frame = cap.read()
+        if not ret:                   # camera read failed — fail safe
+            return False
+        fh, fw = frame.shape[:2]
+        frame_area = fw * fh or 1
+
+        # Expand bbox by 10% margin so minor head shifts stay in crop
+        margin_x, margin_y = int(w * 0.10), int(h * 0.10)
+        x1 = max(x - margin_x, 0)
+        y1 = max(y - margin_y, 0)
+        x2 = min(x + w + margin_x, fw)
+        y2 = min(y + h + margin_y, fh)
+
+        roi = frame[y1:y2, x1:x2]
+        if roi.size == 0:
+            continue
+
+        # Resize to fixed 64x64 so comparisons are stable across distances
+        gray = cv2.cvtColor(cv2.resize(roi, (64, 64)), cv2.COLOR_BGR2GRAY)
+
+        # Bbox area variance: a real held face wobbles slightly; a photo stays perfectly still
+        area_ratios.append((x2 - x1) * (y2 - y1) / frame_area)
+
+        if prev_gray is not None:
+            # Motion signal: photos/screens produce near-zero diff; real faces blink/move
+            diff = np.mean(np.abs(gray.astype(np.float32) - prev_gray.astype(np.float32))) / 255.0
+            diffs.append(diff)
+
+        prev_gray = gray
+        cv2.waitKey(wait_ms)
+
+    if not diffs:                     # not enough frames — fail safe
+        return False
+
+    avg_motion = float(np.mean(diffs))
+    area_var   = float(np.var(area_ratios))
+
+    # CALL PERFORM_LIVENESS_CHECK HERE (in main() loop, before find_best_match):
+    # face_bbox = (box[0], box[1], box[2]-box[0], box[3]-box[1])
+    # if not perform_liveness_check(cap, face_bbox): print("  Liveness failed"); continue
+
+    # Live if motion OR bbox-area variance exceeds threshold
+    return avg_motion > motion_threshold or area_var > area_var_threshold
+
+
 def main():
     students = load_students()
     if not students:
